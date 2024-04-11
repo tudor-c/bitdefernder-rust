@@ -9,16 +9,16 @@ struct FileData {
     filenames: Vec<String>
 }
 
-fn get_zip_contents(reader: impl Read + Seek) -> Vec<String> {
-    let mut zip = zip::ZipArchive::new(reader).unwrap();
+fn get_zip_contents(reader: impl Read + Seek) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut zip = zip::ZipArchive::new(reader)?;
     let mut filenames: Vec<String> = Vec::new();
 
     for i in 0..zip.len() {
-        let file = zip.by_index(i).unwrap();
+        let file = zip.by_index(i)?;
         filenames.push(file.name().to_string());
     }
 
-    return filenames;
+    Ok(filenames)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if path.is_file() && path.extension() == Some(OsStr::new("zip")) {
             let file = File::open(&path)?;
             let zip_name = path.file_name().unwrap().to_string_lossy().to_string();
-            let filenames = get_zip_contents(file);
+            let filenames = get_zip_contents(file)?;
 
             for filename in filenames.iter() {
                 println!("File in {}: {}", zip_name, filename);
@@ -43,8 +43,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 filenames: filenames
             });
 
-        } else {
-            println!("Skipping {:?}", path);
         }
     }
 
