@@ -1,62 +1,67 @@
 use std::{
-    ffi::OsStr,
+    collections::{HashMap, HashSet},
     fs::File,
-    io::{Read, Write, Seek}, vec,
+    io::{BufRead, BufReader}, time::Instant,
 };
-use serde::{Serialize, Deserialize};
-use serde_jsonlines::write_json_lines;
 
-#[derive(Serialize, Deserialize, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
 struct FileData {
+    /// name of the zip archive
     name: String,
-    filenames: Vec<String>
+    /// list of files in the zip archive
+    files: Vec<String>,
 }
 
-fn get_zip_contents(reader: impl Read + Seek) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let mut zip = zip::ZipArchive::new(reader)?;
-    let mut filenames: Vec<String> = Vec::new();
+type Term = String;
+type DocumentId = String;
+type IndexType = HashMap<Term, HashSet<DocumentId>>;
 
-    for i in 0..zip.len() {
-        let file = zip.by_index(i)?;
-        filenames.push(file.name().to_string());
+fn read_data(data_filename: &str) -> Result<Vec<FileData>, Box<dyn std::error::Error>> {
+    let file = File::open(data_filename)?;
+    let reader = BufReader::new(file);
+
+    let mut data: Vec<FileData> = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim();
+        data.push(serde_json::from_str(line)?);
     }
-
-    Ok(filenames)
+    Ok(data)
 }
 
-fn serialize_to<W: Write, T: ?Sized + Serialize>(mut writer: W, value: &T) -> Result<(), std::io::Error> {
-    serde_json::to_writer(&mut writer, value)?;
-    writer.write_all(b"\n")
+fn load_data(data: &Vec<FileData>) -> Result<IndexType, Box<dyn std::error::Error>> {
+    let mut index = IndexType::new();
+
+    for filedata in data {
+        let name = &filedata.name;
+        let files = &filedata.files;
+        for item in files {
+            let tokens = item.split('/');
+            for token in tokens {
+                index.entry(token.to_string())
+                    .or_insert(HashSet::new())
+                    .insert(name.to_string());
+            }
+        }
+    }
+    Ok(index)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let mut data: Vec<FileData> = Vec::new();
+    let data_filename = &args[1];
+    let data = read_data(data_filename)?;
 
-    let dir = &args[1];
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() && path.extension() == Some(OsStr::new("zip")) {
-            let file = File::open(&path)?;
-            let zip_name = path.file_name().unwrap().to_string_lossy().to_string();
-            let filenames = get_zip_contents(file)?;
+    let time = Instant::now();
+    let index = load_data(&data)?;
 
-            println!("Found {} files in {}", filenames.len(), zip_name);
-
-            data.push(FileData {
-                name: zip_name,
-                filenames: filenames
-            });
-
-        }
+    let mut total = 0;
+    for (_, names) in &index {
+        total += names.len();
     }
-
-    let mut out_file = File::create("output.json")?;
-
-    for item in data {
-        serialize_to(&mut out_file, &item)?;
-    }
-
+    println!("terms: {}\npairs: {}", &index.keys().len(), &total);
+    println!("elapsed: {:?}", &time.elapsed());
     Ok(())
 }
