@@ -49,12 +49,24 @@ fn load_data(data: &Vec<FileData>) -> Result<IndexType, Box<dyn std::error::Erro
     Ok(index)
 }
 
+fn run_search(data: &IndexType, terms: Vec<&str>) -> HashMap<DocumentId, u64> {
+    let mut counter: HashMap<DocumentId, u64> = HashMap::new();
+
+    for term in terms {
+        for name in data.get(term).unwrap() {
+            let total = counter.entry(name.to_string()).or_insert(0);
+            *total += 1;
+        }
+    }
+    counter
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let data_filename = &args[1];
     let data = read_data(data_filename)?;
 
-    let time = Instant::now();
+    let index_timer = Instant::now();
     let index = load_data(&data)?;
 
     let mut total = 0;
@@ -62,6 +74,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         total += names.len();
     }
     println!("terms: {}\npairs: {}", &index.keys().len(), &total);
-    println!("elapsed: {:?}", &time.elapsed());
+    println!("indexing took: {:?}", &index_timer.elapsed());
+
+    let search_timer = Instant::now();
+    let _result = run_search(&index, ["cat.jpg", "DebugProbesKt.bin", "phonenumbers"].to_vec());
+    // for (name, count) in result {
+    //         println!("name = {}, count = {}", &name, &count);
+    // }
+    println!("search took: {:?}", &search_timer.elapsed());
     Ok(())
 }
