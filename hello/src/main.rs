@@ -18,7 +18,8 @@ type DocumentId = String;
 
 #[derive(Default)]
 struct IndexedData {
-    terms_to_docs: HashMap<Term, Vec<DocumentId>>,
+    terms_to_docs_idx: HashMap<Term, Vec<usize>>,
+    names: Vec<String>,
     idf: HashMap<Term, f64>,
     num_docs: usize,
 }
@@ -37,8 +38,8 @@ struct Greeting {
 #[derive(Deserialize)]
 struct SearchData {
     terms: Vec<String>,
-    min_score: Option<i32>,
-    max_length: Option<f64>,
+    min_score: Option<f64>,
+    max_length: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -61,7 +62,7 @@ struct FileData {
     files: Vec<String>,
 }
 
-fn compute_idf(terms_to_docs: &HashMap<Term, Vec<DocumentId>>) -> HashMap<Term, f64> {
+fn compute_idf(terms_to_docs: &HashMap<Term, Vec<usize>>) -> HashMap<Term, f64> {
     let n = terms_to_docs.len() as f64;
     let mut terms_idf = HashMap::new();
     for (term, docs) in terms_to_docs {
@@ -78,37 +79,41 @@ fn load_data(data_filename: &str, limit: Option<usize>) -> eyre::Result<IndexedD
     let reader = BufReader::new(file);
 
     let mut index = IndexedData::new();
-    for line in reader.lines().take(limit.unwrap_or(usize::MAX)) {
-        let line = line?;
+    let mut names: Vec<DocumentId> = Vec::new();
 
+    for (count, line) in reader.lines().take(limit.unwrap_or(usize::MAX)).enumerate() {
+        let line = line?;
         let fd: FileData = serde_json::from_str(&line)?;
+        let name = fd.name.clone();
+
         for file in fd.files {
-            for term in file.split("/") {
-                if let Some(set) = index.terms_to_docs.get_mut(term) {
-                    if set.last() != Some(&fd.name) {
-                        set.push(fd.name.clone());
+            for term in file.split('/') {
+                if let Some(set) = index.terms_to_docs_idx.get_mut(term) {
+                    if set.last() != Some(&count) {
+                        set.push(count);
                     }
                 } else {
-                    let mut set = Vec::new();
-                    set.push(fd.name.clone());
-                    index.terms_to_docs.insert(term.to_string(), set);
+                    let set: Vec<usize> = vec![count];
+                    index.terms_to_docs_idx.insert(term.to_string(), set);
                 }
             }
         }
 
+        names.push(name);
         index.num_docs += 1;
     }
 
-    index.idf = compute_idf(&index.terms_to_docs);
+    index.idf = compute_idf(&index.terms_to_docs_idx);
+    index.names = names;
     Ok(index)
 }
 
-fn run_search(data: &IndexedData, terms: Vec<&str>) -> SearchResult {
+fn run_search(data: &IndexedData, terms: Vec<&str>, min_score: f64, _max_length: u32) -> SearchResult {
     let mut counter: HashMap<DocumentId, u64> = HashMap::new();
     for term in &terms {
-        if let Some(docs) = data.terms_to_docs.get(*term) {
+        if let Some(docs) = data.terms_to_docs_idx.get(*term) {
             for doc in docs {
-                let x = counter.entry(doc.to_string()).or_insert(0);
+                let x = counter.entry(data.names[*doc].to_string()).or_insert(0);
                 *x += 1;
             }
         }
@@ -116,16 +121,18 @@ fn run_search(data: &IndexedData, terms: Vec<&str>) -> SearchResult {
 
     let mut matches: Vec<SearchMatch> = Vec::new();
     for (doc, cnt) in counter {
-        matches.push(SearchMatch {
-                md5: doc.to_string(),
-                score: cnt as f64 / terms.len() as f64
-            }
-        );
+        let res = SearchMatch {
+            md5: doc.to_string(),
+            score: cnt as f64 / terms.len() as f64
+        };
+        if res.score >= min_score {
+            matches.push(res);
+        }
     }
     matches.sort_by(|a, b| b.score.total_cmp(&a.score));
     SearchResult {
         total: matches.len(),
-        matches: matches,
+        matches,
     }
 }
 
@@ -140,7 +147,7 @@ fn index() -> Json<Greeting> {
 fn search(req: Json<SearchData>, server_state: &State<Arc<RwLock<ServerState>>>) -> Result<Json<SearchResult>, String> {
     let index = &server_state.read().map_err(|err| format!("Err: {:#}", err))?.index;
     let terms = req.terms.iter().map(|s| s.as_str()).collect();
-    let result = run_search(&index, terms);
+    let result = run_search(index, terms, req.min_score.unwrap(), req.max_length.unwrap());
     Ok(Json(result))
 }
 
@@ -155,7 +162,7 @@ async fn main() -> eyre::Result<()> {
     let data_filename = &args[1];
     let limit = args
         .get(2)
-        .map(|x| usize::from_str_radix(&x, 10))
+        .map(|x| x.parse::<usize>())
         .transpose()?;
 
     println!("loading {data_filename}...");
@@ -164,24 +171,13 @@ async fn main() -> eyre::Result<()> {
     let data = load_data(data_filename, limit)?;
 
     let pair_count = data
-        .terms_to_docs
-        .iter()
-        .map(|(_, docs)| docs.len())
+        .terms_to_docs_idx.values().map(|docs| docs.len())
         .sum::<usize>();
     println!(
         "loaded data for {} docs, {} terms, {} term-docid pairs, in {:.2}s",
         data.num_docs,
-        data.terms_to_docs.len(),
+        data.terms_to_docs_idx.len(),
         pair_count,
-        start.elapsed().as_secs_f64(),
-    );
-
-    let start = Instant::now();
-    let search = vec!["lombok", "AUTHORS", "README.md"];
-    let matches = run_search(&data, search);
-    println!(
-        "search found {} matches in {:.2}s",
-        matches.matches.len(),
         start.elapsed().as_secs_f64(),
     );
 
