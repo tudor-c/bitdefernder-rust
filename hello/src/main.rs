@@ -5,7 +5,7 @@ use std::{
     collections::HashMap, fs::File, io::{BufRead, BufReader, Read, Seek, SeekFrom, Write}, path::Path, sync::{Arc, RwLock}, time::Instant
 };
 
-use rocket::{fs::FileServer, serde::json::Json, tokio::fs, State};
+use rocket::{fs::{FileName, FileServer, TempFile}, serde::json::Json, tokio::fs, State};
 
 use serde::{Deserialize, Serialize};
 use rmp_serde::{Deserializer, Serializer};
@@ -140,6 +140,37 @@ fn index() -> Json<Greeting> {
     })
 }
 
+#[derive(FromForm)]
+struct Upload<'r> {
+    file: TempFile<'r>,
+}
+
+#[post("/search_by_file", data = "<upload>")]
+fn saerch_by_file(upload: rocket::form::Form<Upload<'_>>, server_state: &State<Arc<RwLock<ServerState>>>) {
+    let file = File::open(upload.file.path().unwrap()).unwrap();
+    let reader = BufReader::new(file);
+    let mut zip = zip::ZipArchive::new(reader).unwrap();
+    let mut filenames = Vec::new();
+
+    for i in 0..zip.len() {
+        let f = zip.by_index(i).unwrap();
+        // let mut tokens: Vec<_> = f.name().split('/').map(|x| x.to_string()).collect();
+        // filenames.append(&mut tokens);
+        filenames.push(f.name().to_string());
+    }
+
+    let mut tokens = Vec::new();
+    for filename in &filenames {
+        tokens.extend(filename.split('/'));
+    }
+
+    let index = &server_state.read().map_err(|err| format!("Err: {:#}", err)).unwrap().index;
+    let result = run_search(index, tokens, 0., 10000);
+    for match_str in &result.matches {
+        println!("{}", match_str.md5);
+    }
+}
+
 #[post("/search", data = "<req>")]
 fn search(req: Json<SearchData>, server_state: &State<Arc<RwLock<ServerState>>>) -> Result<Json<SearchResult>, String> {
     let index = &server_state.read().map_err(|err| format!("Err: {:#}", err))?.index;
@@ -200,15 +231,15 @@ async fn main() -> eyre::Result<()> {
         .open(&serialized_data_path)?;
     file.write_all(&buffer)?;
 
-    // let server_state = Arc::new(RwLock::new(ServerState { index: data }));
-    // rocket::build()
-    //     .manage(server_state)
-    //     .mount("/", routes![index, search])
-    //     .mount("/dashboard", FileServer::from("static"))
-    //     .ignite()
-    //     .await?
-    //     .launch()
-    //     .await?;
+    let server_state = Arc::new(RwLock::new(ServerState { index: data }));
+    rocket::build()
+        .manage(server_state)
+        .mount("/", routes![index, search, saerch_by_file])
+        .mount("/dashboard", FileServer::from("static"))
+        .ignite()
+        .await?
+        .launch()
+        .await?;
 
     Ok(())
 }

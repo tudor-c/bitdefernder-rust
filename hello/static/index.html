@@ -144,29 +144,48 @@
         searchBtn.addEventListener('click', () => {
             const minScore = parseFloat(document.getElementById('min-score').value);
             const maxLength = parseInt(document.getElementById('max-length').value);
-            const searchTerms = document.getElementById('search-terms').value;
-            const seatchTermsSeparated = searchTerms.split(',');
+            const searchTerms = document.getElementById('search-terms').value.trim();
 
-            const postData = {
-                terms: seatchTermsSeparated,
-                min_score: minScore,
-                max_length: maxLength
-            };
+            if (file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('min_score', minScore);
+                formData.append('max_length', maxLength);
+                fetch('/search_by_file', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    load_data(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+            } else if (searchTerms) {
+                const searchTermsSeparated = searchTerms.split(',');
 
-            fetch('/search', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(postData)
-            })
-            .then(response => response.json())
-            .then(data => {
-                load_data(data);
-            })
-            .catch(error => {
-                console.error('Error:', error);
-            });
+                const postData = {
+                    terms: searchTermsSeparated,
+                    min_score: minScore,
+                    max_length: maxLength
+                };
+
+                fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(postData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    load_data(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+            }
         });
 
         function load_data(data){
