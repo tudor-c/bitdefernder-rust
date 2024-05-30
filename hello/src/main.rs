@@ -2,21 +2,18 @@
 extern crate rocket;
 
 use std::{
-    collections::HashMap,
-    fs::File,
-    io::{BufRead, BufReader},
-    sync::{Arc, RwLock},
-    time::Instant,
+    collections::HashMap, fs::File, io::{BufRead, BufReader, Read, Seek, SeekFrom, Write}, path::Path, sync::{Arc, RwLock}, time::Instant
 };
 
-use rocket::{fs::FileServer, serde::json::Json, State};
+use rocket::{fs::FileServer, serde::json::Json, tokio::fs, State};
 
 use serde::{Deserialize, Serialize};
+use rmp_serde::{Deserializer, Serializer};
 
 type Term = String;
 type DocumentId = String;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct IndexedData {
     terms_to_docs_idx: HashMap<Term, Vec<usize>>,
     names: Vec<String>,
@@ -168,7 +165,20 @@ async fn main() -> eyre::Result<()> {
     println!("loading {data_filename}...");
     let start = Instant::now();
 
-    let data = load_data(data_filename, limit)?;
+    let serialized_data_path = "data/deserialized_index";
+    let mut data: IndexedData;
+    if Path::new(&serialized_data_path).exists() {
+        println!("reading serialized data instead...");
+        let mut file = File::open(&serialized_data_path)?;
+        // let size = file.metadata().unwrap().len();
+        // let mut buffer: Vec<u8> = vec![0; size as usize];
+        // let n = file.read(&mut buffer[..])?;
+        // println!("Read {} bytes from {}", n, serialized_data_path);
+        data = rmp_serde::from_read(file)?;
+    }
+    else {
+        data = load_data(data_filename, limit)?;
+    }
 
     let pair_count = data
         .terms_to_docs_idx.values().map(|docs| docs.len())
@@ -181,15 +191,24 @@ async fn main() -> eyre::Result<()> {
         start.elapsed().as_secs_f64(),
     );
 
-    let server_state = Arc::new(RwLock::new(ServerState { index: data }));
-    rocket::build()
-        .manage(server_state)
-        .mount("/", routes![index, search])
-        .mount("/dashboard", FileServer::from("static"))
-        .ignite()
-        .await?
-        .launch()
-        .await?;
+    let mut buffer = Vec::new();
+    data.serialize(&mut Serializer::new(&mut buffer)).unwrap();
+
+    let mut file =  std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&serialized_data_path)?;
+    file.write_all(&buffer)?;
+
+    // let server_state = Arc::new(RwLock::new(ServerState { index: data }));
+    // rocket::build()
+    //     .manage(server_state)
+    //     .mount("/", routes![index, search])
+    //     .mount("/dashboard", FileServer::from("static"))
+    //     .ignite()
+    //     .await?
+    //     .launch()
+    //     .await?;
 
     Ok(())
 }
