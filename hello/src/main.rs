@@ -2,16 +2,16 @@
 extern crate rocket;
 
 use std::{
-    collections::HashMap, fs::File, io::{BufRead, BufReader, Read, Seek, SeekFrom, Write}, path::Path, sync::{Arc, RwLock}, time::Instant
+    collections::HashMap, fs::File, io::{BufRead, BufReader, Write}, path::Path, sync::{Arc, RwLock}, time::Instant
 };
 
-use rocket::{fs::{FileName, FileServer, TempFile}, serde::json::Json, tokio::fs, State};
+use hello::{DocumentId, SearchData, SearchMatch, SearchResult};
+use rocket::{fs::{FileServer, TempFile}, serde::json::Json, State};
 
 use serde::{Deserialize, Serialize};
-use rmp_serde::{Deserializer, Serializer};
+use rmp_serde::Serializer;
 
 type Term = String;
-type DocumentId = String;
 
 #[derive(Default, Serialize, Deserialize)]
 struct IndexedData {
@@ -30,25 +30,6 @@ impl IndexedData {
 #[derive(Serialize)]
 struct Greeting {
     message: String,
-}
-
-#[derive(Deserialize)]
-struct SearchData {
-    terms: Vec<String>,
-    min_score: Option<f64>,
-    max_length: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct SearchResult {
-    total: usize,
-    matches: Vec<SearchMatch>
-}
-
-#[derive(Serialize)]
-struct SearchMatch {
-    md5: DocumentId,
-    score: f64
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,7 +146,8 @@ fn saerch_by_file(upload: rocket::form::Form<Upload<'_>>, server_state: &State<A
     }
 
     let index = &server_state.read().map_err(|err| format!("Err: {:#}", err)).unwrap().index;
-    let result = run_search(index, tokens, 0., 10000);
+    let mut result = run_search(index, tokens, 0., 10000);
+    result.matches.sort_by(|a, b| a.md5.cmp(&b.md5));
     for match_str in &result.matches {
         println!("{}", match_str.md5);
     }
@@ -196,20 +178,16 @@ async fn main() -> eyre::Result<()> {
     println!("loading {data_filename}...");
     let start = Instant::now();
 
+
     let serialized_data_path = "data/deserialized_index";
-    let mut data: IndexedData;
-    if Path::new(&serialized_data_path).exists() {
+    let data: IndexedData = if Path::new(&serialized_data_path).exists() {
         println!("reading serialized data instead...");
-        let mut file = File::open(&serialized_data_path)?;
-        // let size = file.metadata().unwrap().len();
-        // let mut buffer: Vec<u8> = vec![0; size as usize];
-        // let n = file.read(&mut buffer[..])?;
-        // println!("Read {} bytes from {}", n, serialized_data_path);
-        data = rmp_serde::from_read(file)?;
+        let file = File::open(serialized_data_path)?;
+        rmp_serde::from_read(file)?
     }
     else {
-        data = load_data(data_filename, limit)?;
-    }
+        load_data(data_filename, limit)?
+    };
 
     let pair_count = data
         .terms_to_docs_idx.values().map(|docs| docs.len())
@@ -228,7 +206,8 @@ async fn main() -> eyre::Result<()> {
     let mut file =  std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .open(&serialized_data_path)?;
+        .truncate(true)
+        .open(serialized_data_path)?;
     file.write_all(&buffer)?;
 
     let server_state = Arc::new(RwLock::new(ServerState { index: data }));
